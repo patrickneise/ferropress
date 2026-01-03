@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ site.title }}{% block title %}{% endblock title %}</title>
+
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="/static/js/htmx.min.js" defer></script>
+</head>
+
+<body class="antialiased" hx-boost="true" hx-select="#main-content" hx-target="#main-content">
+
+    <header
+        class="border-b border-stone-200 dark:border-stone-800 bg-white/80 dark:bg-stone-900/80 backdrop-blur-md sticky top-0 z-50">
+        <nav class="max-w-4xl mx-auto px-6 h-16 flex items-center justify-between">
+            <a href="/"
+                class="font-bold text-xl tracking-tight text-brand-dark dark:text-white hover:text-brand-primary transition-colors">
+                {{ site.title }}
+            </a>
+            <div class="flex items-center gap-6 font-medium">
+                {% for link in site.navbar_links %}
+                <a href="{{ link.url }}" class="hover:text-brand-primary transition-colors">{{ link.label }}</a>
+                {% endfor %}
+            </div>
+        </nav>
+    </header>
+
+    <main id="main-content" class="max-w-4xl mx-auto px-6 py-workshop animate-fade-in">
+        {% block content %}{% endblock content %}
+    </main>
+
+    <footer class="mt-20 py-12 border-t border-stone-200 dark:border-stone-800 text-center text-sm text-stone-500">
+        &copy; {{ current_year }} {{ site.author }}
+    </footer>
+</body>
+
+</html>

@@ -1,0 +1,7 @@
+/dist
+/target
+/content
+/static
+/templates
+site.toml
+.DS_Store

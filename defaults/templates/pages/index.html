@@ -1,0 +1,57 @@
+{% extends "layouts/base.html" %}
+
+{% block title %} | Home{% endblock title %}
+
+{% block content %}
+<div class="space-y-16 animate-fade-in">
+    <header class="max-w-2xl">
+        <h1 class="text-5xl font-extrabold tracking-tight text-brand-dark dark:text-white">
+            Latest <span class="text-brand-primary">Reflections</span>
+        </h1>
+        <p class="mt-4 text-xl text-stone-500 dark:text-stone-400 leading-relaxed">
+            Welcome to my Ferropress-powered journal. Explore thoughts on code, craft, and the digital forge.
+        </p>
+    </header>
+
+    <div class="grid gap-8 md:grid-cols-2 lg:grid-cols-2">
+        {% for post in posts %}
+        <article class="group relative flex flex-col items-start p-8 
+                        bg-white dark:bg-stone-900/50 
+                        rounded-2xl border border-stone-200 dark:border-stone-800 
+                        hover:border-brand-primary/50 dark:hover:border-brand-primary/50
+                        transition-all duration-300 shadow-sm hover:shadow-xl hover:-translate-y-1">
+
+            <div
+                class="flex items-center gap-x-4 text-xs font-bold uppercase tracking-widest text-stone-400 dark:text-stone-500">
+                {% if post.metadata.date %}
+                <time datetime="{{ post.metadata.date }}">{{ post.metadata.date }}</time>
+                {% endif %}
+
+                {% if post.metadata.tags %}
+                <span class="text-stone-200 dark:text-stone-800">|</span>
+                <span class="text-brand-primary">{{ post.metadata.tags[0] }}</span>
+                {% endif %}
+            </div>
+
+            <div class="mt-4">
+                <h3
+                    class="text-2xl font-bold leading-tight text-brand-dark dark:text-stone-100 group-hover:text-brand-primary transition-colors">
+                    <a href="/{{ post.slug }}.html">
+                        <span class="absolute inset-0"></span>
+                        {{ post.metadata.title }}
+                    </a>
+                </h3>
+
+                <p class="mt-4 text-stone-600 dark:text-stone-400 line-clamp-3 leading-relaxed">
+                    {{ post.metadata.description | default(value="No description provided for this recast.") }}
+                </p>
+            </div>
+
+            <div class="mt-6 flex items-center gap-2 text-sm font-bold text-brand-primary">
+                Read Article <span class="transition-transform group-hover:translate-x-1">→</span>
+            </div>
+        </article>
+        {% endfor %}
+    </div>
+</div>
+{% endblock content %}

@@ -1,0 +1,49 @@
+{% extends "layouts/base.html" %}
+
+{# This updates the tab title dynamically #}
+{% block title %} | {{ post.title }}{% endblock title %}
+
+{% block content %}
+<article class="animate-fade-in">
+    <header class="mb-12 border-b border-stone-200 dark:border-stone-800 pb-8">
+        {# Using our theme variable via a utility class #}
+        <h1 class="text-4xl md:text-5xl font-extrabold text-brand-primary mb-4 tracking-tight">
+            {{ post.title }}
+        </h1>
+
+        <div class="flex items-center gap-3 text-stone-500 dark:text-stone-400 font-medium">
+            {% if post.date %}
+            <time datetime="{{ post.date }}">{{ post.date }}</time>
+            {% endif %}
+
+            {% if post.tags %}
+            <span class="text-stone-300 dark:text-stone-700">/</span>
+            <div class="flex gap-2">
+                {% for tag in post.tags %}
+                <span class="text-xs font-bold uppercase tracking-widest hover:text-brand-primary cursor-default">
+                    #{{ tag }}
+                </span>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+    </header>
+
+    {#
+    The 'prose' class handles all nested markdown styling.
+    We use 'prose-stone' as a base and 'dark:prose-invert' for dark mode.
+    #}
+    <div class="prose prose-stone lg:prose-xl dark:prose-invert max-w-none
+                prose-a:text-brand-primary prose-a:no-underline hover:prose-a:underline
+                prose-pre:bg-stone-900 prose-pre:shadow-inner">
+        {{ content | safe }}
+    </div>
+
+    <footer class="mt-16 pt-8 border-t border-stone-200 dark:border-stone-800">
+        <a href="/" class="group inline-flex items-center gap-2 text-brand-primary font-semibold">
+            <span class="transition-transform group-hover:-translate-x-1">←</span>
+            Back to the Hearth
+        </a>
+    </footer>
+</article>
+{% endblock content %}

@@ -1,0 +1,40 @@
+[package]
+name = "ferropress"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+pulldown-cmark = "0.13.0"
+gray_matter = "0.3.2"
+clap = { version = "4.0", features = ["derive"] }
+tokio = { version = "1.0", features = [
+    "macros",
+    "process",
+    "rt-multi-thread",
+    "signal",
+] }
+tokio-util = "0.7"
+axum = "0.8.8"
+tower-http = { version = "0.6", features = ["fs"] }
+tower-livereload = "0.10.1"
+notify = "8.2"
+walkdir = "2.4"
+tera = "1"
+toml = "0.9"
+chrono = "0.4"
+anyhow = "1.0"
+tempfile = "3.24.0"
+
+[build-dependencies]
+reqwest = { version = "0.12", features = [
+    "blocking",
+    "rustls-tls",
+], default-features = false }
+
+[profile.release]
+opt-level = 'z'   # Optimize for size
+lto = true        # Link Time Optimization (makes the binary much smaller)
+codegen-units = 1 # Better optimization, slightly slower compile
+panic = 'abort'   # Removes stack unwinding code, shrinking binary further

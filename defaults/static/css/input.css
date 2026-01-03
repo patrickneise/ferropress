@@ -1,0 +1,37 @@
+@import "tailwindcss";
+
+@theme {
+    /* Brand Identity */
+    --color-brand-primary: var(--color-orange-600);
+    --color-brand-dark: var(--color-stone-900);
+    --color-brand-light: var(--color-stone-50);
+
+    /* Dark Mode specific */
+    --color-dark-bg: var(--color-stone-950);
+    --color-dark-card: var(--color-stone-900);
+
+    /* Layout Constants */
+    --spacing-workshop: 4rem;
+
+    /* Fluid Animations */
+    --animate-fade-in: fade-in 0.4s ease-out;
+}
+
+@keyframes fade-in {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@layer base {
+    body {
+        @apply bg-brand-light text-brand-dark transition-colors duration-300;
+        @apply dark:bg-dark-bg dark:text-stone-200;
+    }
+}
