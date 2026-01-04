@@ -1,6 +1,6 @@
 use crate::engine::utils;
 use crate::models::{Post, ProjectPaths, RenderedPage, SiteConfig};
-use anyhow::{Context as AnyhowContext, Result};
+use anyhow::{Context, Result};
 use std::path::Path;
 use tera::Tera;
 
@@ -11,7 +11,7 @@ pub struct Renderer {
 impl Renderer {
     pub fn new(template_dir: &Path) -> Result<Self> {
         let tera = Tera::new(&format!("{}/**/*", template_dir.display()))
-            .context("Failed to initilize Tera templates")?;
+            .context("Failed to initialize Tera templates")?;
         Ok(Self { tera })
     }
 
@@ -27,11 +27,9 @@ impl Renderer {
             ctx.insert("post", &post.metadata);
             ctx.insert("content", &markdown_to_html(&post.content));
 
-            let html = self.tera.render("post.html", &ctx).map_err(|e| {
-                eprintln!("Tera Error: {}", e); // This will print the specific missing variable or template
-                anyhow::anyhow!("Failed to render post template for: {}", post.slug)
+            let html = self.tera.render("post.html", &ctx).with_context(|| {
+                format!("Failed to render post template for slug: {}", post.slug)
             })?;
-            // .with_context(|| format!("Failed to render post template for: {}", post.slug))?;
 
             rendered.push(RenderedPage {
                 slug: post.slug.clone(),
@@ -56,7 +54,7 @@ impl Renderer {
 
         // Fixed: walk_dir returns a Result, so we need to handle it
         for entry in utils::walk_dir(&pages_dir, "html")? {
-            // Slug is the output path (e.g., "about.html")
+            // Slug is the output path (e.g., "about")
             let slug = utils::Slugify::from_path(&entry, &pages_dir)?;
 
             let mut ctx = config.base_context();
@@ -81,8 +79,16 @@ impl Renderer {
 }
 
 fn markdown_to_html(markdown: &str) -> String {
-    use pulldown_cmark::{Parser, html};
-    let parser = Parser::new(markdown);
+    use pulldown_cmark::{Options, Parser, html};
+
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TASKLISTS);
+    options.insert(Options::ENABLE_FOOTNOTES);
+
+    let parser = Parser::new_ext(markdown, options);
+
     let mut html_output = String::new();
     html::push_html(&mut html_output, parser);
     html_output

@@ -23,8 +23,9 @@ pub async fn execute(mode: ServeMode) -> Result<()> {
     let livereload = LiveReloadLayer::new();
     let reloader = livereload.reloader();
 
-    let serve_dir =
-        ServeDir::new(&paths.dist).fallback(ServeFile::new(paths.dist.join("404.html")));
+    let serve_dir = ServeDir::new(&paths.dist)
+        .append_index_html_on_directories(true)
+        .fallback(ServeFile::new(paths.dist.join("404.html")));
 
     let mut app = Router::new().fallback_service(serve_dir);
     if mode == ServeMode::Dev {
@@ -42,6 +43,12 @@ pub async fn execute(mode: ServeMode) -> Result<()> {
 
     if mode == ServeMode::Dev {
         spawn_tailwind_watch(paths.clone(), token.clone());
+
+        let css_out = paths.output_css_file();
+        if !wait_for_file(&css_out, 1500).await {
+            eprintln!("⚠️  Tailwind output not ready yet: {}", css_out.display());
+        }
+
         spawn_watcher(paths.clone(), reloader.clone(), token.clone());
     }
 
@@ -50,7 +57,7 @@ pub async fn execute(mode: ServeMode) -> Result<()> {
         .await
         .with_context(|| format!("Failed to bind {}", addr))?;
 
-    println!("🌍 Listening on {} (open http://localhost:3000)", addr);
+    println!("🌍 Listening on {} (http://localhost:3000)", addr);
 
     let server_token = token.clone();
     axum::serve(listener, app)
@@ -165,4 +172,15 @@ fn spawn_watcher(
             }
         }
     });
+}
+
+async fn wait_for_file(path: &std::path::Path, timeout_ms: u64) -> bool {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    while tokio::time::Instant::now() < deadline {
+        if path.exists() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    false
 }

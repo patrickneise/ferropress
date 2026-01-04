@@ -38,18 +38,20 @@ pub fn build_css(paths: &ProjectPaths) -> Result<()> {
     let input_css = paths.input_css_file();
     let output_css = paths.output_css_file();
 
-    std::process::Command::new(tailwind_path)
-        .args([
-            "-i",
-            input_css.to_str().unwrap(),
-            "-o",
-            output_css.to_str().unwrap(),
-            "--minify",
-        ])
+    let status = std::process::Command::new(tailwind_path)
+        .arg("-i")
+        .arg(&input_css)
+        .arg("-o")
+        .arg(&output_css)
+        .arg("--minify")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .status()
-        .with_context(|| "TailwindCSS execution failed")?;
+        .context("TailwindCSS execution failed")?;
+
+    if !status.success() {
+        anyhow::bail!("TailwindCSS exited with status: {}", status);
+    }
 
     Ok(())
 }
@@ -77,13 +79,20 @@ pub fn copy_static_assets(paths: &ProjectPaths) -> Result<()> {
 }
 
 fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> std::io::Result<()> {
+    let src = src.as_ref();
+    let dst = dst.as_ref();
+
+    fs::create_dir_all(dst)?;
+
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let ty = entry.file_type()?;
+        let dest_path = dst.join(entry.file_name());
+
         if ty.is_dir() {
-            copy_dir_all(entry.path(), dst.as_ref().join(entry.file_name()))?;
+            copy_dir_all(entry.path(), &dest_path)?;
         } else {
-            fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
+            fs::copy(entry.path(), dest_path)?;
         }
     }
     Ok(())
@@ -91,12 +100,28 @@ fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> std::io::Result
 
 fn write_pages(dist_root: &Path, pages: Vec<RenderedPage>) -> Result<()> {
     for page in pages {
-        let output_path = dist_root.join(format!("{}.html", &page.slug));
+        let slug = page.slug.trim_matches('/');
+
+        // Pretty URL rules:
+        // - "index" -> /index.html
+        // - "404"   -> /404.html   (so ServeFile fallback works)
+        // - otherwise -> /<slug>/index.html
+        let output_path = if slug == "index" {
+            dist_root.join("index.html")
+        } else if slug == "404" {
+            dist_root.join("404.html")
+        } else {
+            dist_root.join(slug).join("index.html")
+        };
+
         if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory: {:?}", parent))?;
         }
+
         fs::write(&output_path, page.html)
             .with_context(|| format!("Failed to write page: {:?}", output_path))?;
     }
+
     Ok(())
 }
