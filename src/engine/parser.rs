@@ -10,11 +10,15 @@ pub fn parse_post(path: &Path, prefix: &Path) -> Result<Post> {
         fs::read_to_string(path).with_context(|| format!("Failed to read file at {:?}", path))?;
 
     let matter = Matter::<gray_matter::engine::YAML>::new();
-    let result = matter.parse::<PostMetadata>(&raw)?;
+    let result = matter
+        .parse::<PostMetadata>(&raw)
+        .with_context(|| format!("Failed to parse front matter in {:?}", path))?;
 
-    let metadata = result.data.context("Invalide Post frontmatter")?;
+    let metadata = result
+        .data
+        .with_context(|| format!("Invalid post front matter in {:?}", path))?;
 
-    let slug = utils::Slugify::from_path(path, prefix);
+    let slug = utils::Slugify::from_path(path, prefix)?;
 
     Ok(Post {
         metadata,
@@ -68,7 +72,10 @@ This is the body."
         let post = parse_post(&file_path, dir.path()).unwrap();
 
         assert_eq!(post.metadata.title, "Hello World");
-        assert_eq!(post.metadata.date, "2026-01-01");
+        assert_eq!(
+            post.metadata.date,
+            chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()
+        );
         assert_eq!(post.metadata.tags, vec!["rust", "forge"]);
         assert_eq!(post.slug, "posts/hello-world");
         assert_eq!(post.content.trim(), "This is the body.");

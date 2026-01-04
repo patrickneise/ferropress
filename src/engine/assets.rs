@@ -6,7 +6,8 @@ use std::path::PathBuf;
 const TW_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/tailwindcss_bin"));
 
 pub fn get_tailwind_exe() -> Result<PathBuf> {
-    let mut exe_path = std::env::temp_dir().join("ferrorpress_tailwind");
+    let mut exe_path =
+        std::env::temp_dir().join(format!("ferropress_tailwind_{}", env!("CARGO_PKG_VERSION")));
 
     if cfg!(target_os = "windows") {
         exe_path.set_extension("exe");

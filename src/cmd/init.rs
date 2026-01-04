@@ -1,8 +1,10 @@
 use crate::models::{ProjectPaths, SiteConfig};
 use anyhow::{Context, Result};
-use std::fs;
-use std::path::PathBuf;
-use std::process::Command;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 pub const DEFAULT_LAYOUT: &str = include_str!("../../defaults/templates/layouts/base.html");
 pub const DEFAULT_INDEX: &str = include_str!("../../defaults/templates/pages/index.html");
@@ -13,53 +15,39 @@ pub const DEFAULT_HTMX: &str = include_str!("../../defaults/static/js/htmx.min.j
 pub const EXAMPLE_POST_1: &str = include_str!("../../defaults/content/posts/hello.md");
 pub const EXAMPLE_POST_2: &str = include_str!("../../defaults/content/posts/2025/hello.md");
 
-pub fn execute(force: bool, name: Option<String>) -> Result<()> {
-    // determine project root
-    let root = match name {
-        Some(n) => PathBuf::from(n),
-        None => {
-            if force {
-                PathBuf::from(".")
-            } else {
-                PathBuf::from("my-forge")
-            }
-        }
-    };
+/// Initialize a FerroPress site at `path`.
+/// - `overwrite`: overwrite only the scaffold files FerroPress manages
+/// - `clean`: remove existing scaffold directories/files before initializing (dangerous)
+pub async fn execute(path: PathBuf, overwrite: bool, clean: bool) -> Result<()> {
+    let root = path;
 
-    // safety check to avoid overwriting project
-    if root.exists() && !force {
-        anyhow::bail!(
-            "❌ Directory '{}' already exists. Use --force to overwrite or choose a new name.",
-            root.display()
-        );
-    }
-
-    // create root if it doesn't exist
+    // create root if needed
     if !root.exists() {
-        fs::create_dir_all(&root)?;
+        fs::create_dir_all(&root)
+            .with_context(|| format!("Failed to create directory {}", root.display()))?;
     }
 
-    // build source structure
     let paths = ProjectPaths::from_root(&root);
-    let dirs = [
-        &paths.content,
-        &paths.templates,
-        &paths.static_files,
-        &paths.static_files.join("css"),
-        &paths.static_files.join("js"),
-    ];
-    for dir in dirs {
-        fs::create_dir_all(dir).with_context(|| format!("Failed to create {:?}", dir))?;
+
+    if clean {
+        clean_scaffold(&paths)?;
+    } else if !overwrite {
+        // Safe default: refuse if any of our managed scaffold files already exist
+        // (prevents accidental clobber in an existing repo)
+        ensure_no_scaffold_conflicts(&paths)?;
     }
 
-    println!("⚒️  FERROPRESS: Drafting the Blueprints...");
+    println!(
+        "⚒️  FERROPRESS: Drafting the Blueprints in {}...",
+        root.display()
+    );
 
-    // generate site.toml from SiteConfig::default()
+    // Build site.toml from default config
     let default_config = SiteConfig::default();
     let config_str = toml::to_string_pretty(&default_config)
         .context("Failed to serialize default SiteConfig to TOML")?;
 
-    // define blueprints (source content, desination path)
+    // define blueprints (content, desination)
     let blueprints: Vec<(&str, PathBuf)> = vec![
         (&config_str, paths.config.clone()),
         (
@@ -87,37 +75,114 @@ pub fn execute(force: bool, name: Option<String>) -> Result<()> {
         ),
     ];
 
-    // execute blueprints
     for (content, dest) in blueprints {
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)?;
+        // Shouldn't happen because ensure_no_scaffold_conflicts() catches it,
+        // but keep this as a safety net.
+        if dest.exists() && !overwrite && !clean {
+            anyhow::bail!(
+                "Refusing to overwrite existing file {}. Re-run with --overwrite.",
+                dest.display()
+            )
         }
-        fs::write(dest, content)?;
+
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory {}", parent.display()))?;
+        }
+
+        fs::write(&dest, content)
+            .with_context(|| format!("Failed to write file {}", dest.display()))?;
     }
 
+    // Initialize git only if there's not .git already
     match init_git(&root) {
         Ok(true) => {
-            let gitignore = "/dist\n/target\n.DS_Store\n";
-            fs::write(root.join(".gitignore"), gitignore)?;
-            println!("🌱 Git repository initialized with .gitignore");
+            upsert_gitignore(&root)?;
+            println!("🌱 Git repository initialized (main) + .gitignore updated");
         }
         Ok(false) => {
-            println!("⚠️  Git executable not found. Skipping repository initialization.");
+            // git not found OR already a git repo
         }
         Err(e) => {
-            println!(
-                "⚠️  Git init failed, but the forge was still created: {}",
-                e
-            );
+            println!("⚠️  Git init failed (site still created): {:#}", e);
         }
     }
 
-    println!("✅ SUCCESS: Workshop ready. Try running 'ferropress preview'!");
+    println!("✅ SUCCESS: Workshop ready.");
+    if root.as_path() == Path::new(".") {
+        println!("Next: ferropress preview");
+    } else {
+        println!("Next: cd {} && ferropress preview", root.display());
+    }
+
     Ok(())
 }
 
-fn init_git(root: &PathBuf) -> Result<bool> {
-    // check for `git` binary
+/// Refuse to overwrite if any managed scaffold files already exist.
+fn ensure_no_scaffold_conflicts(paths: &ProjectPaths) -> Result<()> {
+    let managed = managed_scaffold_files(paths);
+    let conflicts: Vec<PathBuf> = managed.into_iter().filter(|p| p.exists()).collect();
+
+    if !conflicts.is_empty() {
+        let mut msg = String::from("Scaffold already exists:\n");
+        for c in conflicts {
+            msg.push_str(&format!("  - {}\n", c.display()));
+        }
+        msg.push_str("Re-run with --overwrite to overwrite scaffold files, or --clean to remove scaffold first.");
+        anyhow::bail!(msg);
+    }
+
+    Ok(())
+}
+
+/// Remove known scaffold directories/files (dangerous but bounded).
+fn clean_scaffold(paths: &ProjectPaths) -> Result<()> {
+    // Prefer boudned deletion: remove only known top-level scaffold dirs/fils.
+    // (Safer than nuking the entire root directory.)
+    let to_remove_files = [paths.config.clone()];
+    for f in to_remove_files {
+        if f.exists() {
+            fs::remove_file(&f)
+                .with_context(|| format!("Failed to remove file {}", f.display()))?;
+        }
+    }
+
+    let to_remove_dirs = [
+        paths.content.clone(),
+        paths.templates.clone(),
+        paths.static_files.clone(),
+    ];
+    for d in to_remove_dirs {
+        if d.exists() {
+            fs::remove_dir_all(&d)
+                .with_context(|| format!("Failed to remove directory {}", d.display()))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn managed_scaffold_files(paths: &ProjectPaths) -> Vec<PathBuf> {
+    vec![
+        paths.config.clone(),
+        paths.templates.join("layouts").join("base.html"),
+        paths.templates.join("pages").join("index.html"),
+        paths.templates.join("pages").join("404.html"),
+        paths.templates.join("post.html"),
+        paths.static_files.join("css").join("input.css"),
+        paths.static_files.join("js").join("htmx.min.js"),
+        paths.content.join("posts").join("hello.md"),
+        paths.content.join("posts").join("2025").join("hello.md"),
+    ]
+}
+
+fn init_git(root: &Path) -> Result<bool> {
+    // Skip if already a git repo
+    if root.join(".git").exists() {
+        return Ok(false);
+    }
+
+    // check for git binary
     let git_check = Command::new("git")
         .arg("--version")
         .stdout(std::process::Stdio::null())
@@ -127,10 +192,7 @@ fn init_git(root: &PathBuf) -> Result<bool> {
     match git_check {
         Ok(status) if status.success() => {
             let output = Command::new("git")
-                .arg("init")
-                .arg("-b")
-                .arg("main")
-                .arg(root)
+                .args(["init", "-b", "main"])
                 .output()
                 .context("Failed to execute git init")?;
 
@@ -138,4 +200,28 @@ fn init_git(root: &PathBuf) -> Result<bool> {
         }
         _ => Ok(false), // Git not found or command failed to start
     }
+}
+
+fn upsert_gitignore(root: &Path) -> Result<()> {
+    let path = root.join(".gitignore");
+    let block = "/dist\n/target\n.DS_Store\n";
+
+    if path.exists() {
+        let existing = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        if !existing.contains("/dist") {
+            let mut new_contents = existing;
+            if !new_contents.ends_with('\n') {
+                new_contents.push('\n');
+            }
+            new_contents.push_str(block);
+            fs::write(&path, new_contents)
+                .with_context(|| format!("Failed to write {}", path.display()))?;
+        } else {
+            fs::write(&path, block)
+                .with_context(|| format!("Failed to write {}", path.display()))?;
+        }
+    }
+
+    Ok(())
 }

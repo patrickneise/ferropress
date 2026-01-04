@@ -2,35 +2,48 @@ pub mod cmd;
 pub mod engine;
 pub mod models;
 
-use anyhow::Result;
+use crate::models::ServeMode;
+use anyhow::{Context, Result};
 use clap::Parser;
 use cmd::{Cli, Commands};
+use std::process::ExitCode;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    if let Err(e) = run(cli).await {
-        eprintln!("🔥 Ferropress Error: {}", e);
-        std::process::exit(1);
+    match run(cli).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("FerroPress Error: {:#}", e);
+            ExitCode::FAILURE
+        }
     }
 }
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Commands::Init { force, name } => {
-            cmd::init::execute(force, name)?;
+        Commands::Init {
+            path,
+            overwrite,
+            clean,
+        } => {
+            cmd::init::execute(path, overwrite, clean)
+                .await
+                .context("init failed")?;
         }
         Commands::Build => {
-            cmd::build::execute()?;
+            cmd::build::execute().await.context("build failed")?;
         }
         Commands::Preview => {
-            println!("🔥 Starting dev server with hot-reload...");
-            cmd::serve::execute(true).await?;
+            cmd::serve::execute(ServeMode::Dev)
+                .await
+                .context("preview failed")?;
         }
         Commands::Serve => {
-            println!("🌍 Serving production build on http://localhost:3000");
-            cmd::serve::execute(false).await?;
+            cmd::serve::execute(ServeMode::Prod)
+                .await
+                .context("serve failed")?;
         }
     }
     Ok(())

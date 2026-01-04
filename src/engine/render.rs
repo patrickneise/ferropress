@@ -57,7 +57,7 @@ impl Renderer {
         // Fixed: walk_dir returns a Result, so we need to handle it
         for entry in utils::walk_dir(&pages_dir, "html")? {
             // Slug is the output path (e.g., "about.html")
-            let slug = utils::Slugify::from_path(&entry, &pages_dir);
+            let slug = utils::Slugify::from_path(&entry, &pages_dir)?;
 
             let mut ctx = config.base_context();
             ctx.insert("posts", posts);

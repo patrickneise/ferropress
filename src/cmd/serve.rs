@@ -1,6 +1,6 @@
 use crate::engine;
-use crate::models::{ProjectPaths, SiteConfig};
-use anyhow::Result;
+use crate::models::{ProjectPaths, ServeMode, SiteConfig};
+use anyhow::{Context, Result};
 use axum::Router;
 use std::net::SocketAddr;
 use std::process::Stdio;
@@ -9,16 +9,17 @@ use tokio_util::sync::CancellationToken;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_livereload::LiveReloadLayer;
 
-pub async fn execute(watch: bool) -> Result<()> {
+pub async fn execute(mode: ServeMode) -> Result<()> {
     let paths = ProjectPaths::default();
-    let config = SiteConfig::load(&paths.config)?;
+    let config = SiteConfig::load(&paths.config).context("Failed to load site.toml")?;
     let token = CancellationToken::new();
 
-    // start from clean slate and build structure
-    paths.clean_dist()?;
-    paths.create_dist_folders()?;
+    paths.clean_dist().context("Failed to clean dist/")?;
+    paths
+        .create_dist_folders()
+        .context("Failed to create dist/")?;
 
-    // setup web server
+    // livereload
     let livereload = LiveReloadLayer::new();
     let reloader = livereload.reloader();
 
@@ -26,114 +27,142 @@ pub async fn execute(watch: bool) -> Result<()> {
         ServeDir::new(&paths.dist).fallback(ServeFile::new(paths.dist.join("404.html")));
 
     let mut app = Router::new().fallback_service(serve_dir);
-    if watch {
+    if mode == ServeMode::Dev {
         app = app.layer(livereload);
     }
 
-    // start sidecars (Tailwind & Watcher)
-    if watch {
-        // tailwind sidecar
-        let tw_token = token.clone();
-        let tw_paths = paths.clone();
-        tokio::spawn(async move {
-            let tw_path = engine::assets::get_tailwind_exe().unwrap();
+    // In prod, build CSS once up front.
+    if mode == ServeMode::Prod {
+        engine::build_css(&paths).context("Tailwind build failed")?;
+    }
 
-            let input_css = tw_paths.input_css_file();
-            let output_css = tw_paths.output_css_file();
-            let mut child = Command::new(tw_path)
-                .args([
-                    "-i",
-                    input_css.to_str().unwrap(),
-                    "-o",
-                    output_css.to_str().unwrap(),
-                    "--watch",
-                ])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("Failed to start Tailwind");
+    // Copy + render once before starting the server
+    engine::copy_static_assets(&paths).context("Copying static assets failed")?;
+    engine::render_site(&paths, &config).context("Rendering site failed")?;
 
-            tokio::select! {
-                _ = tw_token.cancelled() => { let _ = child.kill().await; }
-                _ = child.wait() => {}
+    if mode == ServeMode::Dev {
+        spawn_tailwind_watch(paths.clone(), token.clone());
+        spawn_watcher(paths.clone(), reloader.clone(), token.clone());
+    }
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("Failed to bind {}", addr))?;
+
+    println!("🌍 Listening on {} (open http://localhost:3000)", addr);
+
+    let server_token = token.clone();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            println!("\n🛑 Quenching the flames...");
+            server_token.cancel();
+        })
+        .await
+        .context("Server exited with error")?;
+
+    Ok(())
+}
+
+fn spawn_tailwind_watch(paths: ProjectPaths, token: CancellationToken) {
+    tokio::spawn(async move {
+        let tw_path = match engine::assets::get_tailwind_exe() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("🛑 Tailwind not available: {:#}", e);
+                return;
             }
-        });
+        };
 
-        // file watcher sidecar
-        let watch_paths = paths.clone();
-        let watch_reloader = reloader.clone();
-        let watch_token = token.clone();
+        let input_css = paths.input_css_file();
+        let output_css = paths.output_css_file();
 
-        tokio::task::spawn_blocking(move || {
-            use notify::{Config, RecursiveMode, Watcher};
-            let (tx, rx) = std::sync::mpsc::channel();
-            let mut watcher = notify::RecommendedWatcher::new(tx, Config::default()).unwrap();
+        let mut child = match Command::new(tw_path)
+            .arg("-i")
+            .arg(&input_css)
+            .arg("-o")
+            .arg(&output_css)
+            .arg("--watch")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("🛑 Failed to start Tailwind: {:#}", e);
+                return;
+            }
+        };
 
-            watcher
-                .watch(&watch_paths.content, RecursiveMode::Recursive)
-                .ok();
-            watcher
-                .watch(&watch_paths.templates, RecursiveMode::Recursive)
-                .ok();
-            watcher
-                .watch(&watch_paths.static_files, RecursiveMode::Recursive)
-                .ok();
-            watcher
-                .watch(&watch_paths.config, RecursiveMode::NonRecursive)
-                .ok();
+        tokio::select! {
+            _ = token.cancelled() => { let _ = child.kill().await; }
+            _ = child.wait() => {}
+        }
+    });
+}
 
-            while !watch_token.is_cancelled() {
-                if let Ok(Ok(event)) = rx.recv_timeout(std::time::Duration::from_millis(200)) {
+fn spawn_watcher(
+    watch_paths: ProjectPaths,
+    reloader: tower_livereload::Reloader,
+    token: CancellationToken,
+) {
+    tokio::task::spawn_blocking(move || {
+        use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = match RecommendedWatcher::new(tx, Config::default()) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("🛑 Watcher init failed: {:#}", e);
+                return;
+            }
+        };
+
+        for (path, mode) in [
+            (&watch_paths.content, RecursiveMode::Recursive),
+            (&watch_paths.templates, RecursiveMode::Recursive),
+            (&watch_paths.static_files, RecursiveMode::Recursive),
+            (&watch_paths.config, RecursiveMode::NonRecursive),
+        ] {
+            if let Err(e) = watcher.watch(path, mode) {
+                eprintln!("🛑 Failed to watch {}: {:#}", path.display(), e);
+                return;
+            }
+        }
+
+        while !token.is_cancelled() {
+            match rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                Ok(Ok(event)) => {
                     if event.kind.is_access() {
                         continue;
                     }
 
                     // debounce
                     std::thread::sleep(std::time::Duration::from_millis(150));
-                    while rx.try_recv().is_ok() {} // Drain buffer
+                    while rx.try_recv().is_ok() {}
 
                     println!("♻️  Change detected. Recasting...");
 
-                    // copy static assets and render site
-                    let rebuild = || -> Result<()> {
-                        let latest_config = SiteConfig::load(&watch_paths.config)?;
-                        engine::copy_static_assets(&watch_paths)?;
-                        engine::render_site(&watch_paths, &latest_config)?;
+                    let result: Result<()> = (|| {
+                        let latest_config = SiteConfig::load(&watch_paths.config)
+                            .context("Failed to load site.toml")?;
+                        engine::copy_static_assets(&watch_paths)
+                            .context("Copying static assets failed")?;
+                        engine::render_site(&watch_paths, &latest_config)
+                            .context("Rendering site failed")?;
                         Ok(())
-                    };
+                    })();
 
-                    if let Err(e) = rebuild() {
-                        eprintln!("🛑 Build failed: {:?}", e);
-                    } else {
-                        // Give Tailwind sidecar a moment, then refresh
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                        watch_reloader.reload();
+                    match result {
+                        Ok(()) => reloader.reload(),
+                        Err(e) => eprintln!("🛑 Build failed: {:#}", e),
                     }
                 }
+                Ok(Err(e)) => eprintln!("⚠️  Watch event error: {:#}", e),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             }
-        });
-    } else {
-        engine::build_css(&paths)?;
-    }
-
-    engine::copy_static_assets(&paths)?;
-    engine::render_site(&paths, &config)?;
-
-    // run server with graceful shutdown
-    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-
-    println!("🔥 THE HEARTH IS GLOWING (Dev Mode: {})", watch);
-    println!("🌍 URL: http://localhost:3000");
-
-    let server_token = token.clone();
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            tokio::signal::ctrl_c().await.ok();
-            println!("\n🛑 Quenching the flames...");
-            server_token.cancel()
-        })
-        .await?;
-
-    std::process::exit(0);
+        }
+    });
 }
